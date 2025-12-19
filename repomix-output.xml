@@ -1,0 +1,505 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.gitignore
+README.md
+requirements.txt
+spotify_downloader.py
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path=".gitignore">
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Environment
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Downloads
+downloads/
+*.mp3
+*.m4a
+*.webm
+*.opus
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+</file>
+
+<file path="README.md">
+# Spotify Music Downloader
+
+A Python bot that downloads music from YouTube Music using Spotify metadata and converts it to high-quality MP3 files with embedded album art and metadata.
+
+## Features
+
+- Extract metadata from Spotify tracks (title, artist, album, album art)
+- Search YouTube Music for the best audio match
+- Download and convert audio to 256kbps MP3 using FFmpeg
+- Inject Spotify metadata and album art into MP3 files
+- Smart filename sanitization and duration matching
+
+## Requirements
+
+- Python 3.7+
+- FFmpeg (must be installed on your system)
+- Spotify Developer Account
+
+## Installation
+
+1. Clone or download this repository
+2. Create and activate a virtual environment (recommended):
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
+3. Install Python dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. Install FFmpeg:
+   - **Ubuntu/Debian**: `sudo apt install ffmpeg`
+   - **macOS**: `brew install ffmpeg`
+   - **Windows**: Download from [ffmpeg.org](https://ffmpeg.org/download.html)
+
+5. Set up Spotify API credentials:
+   - Go to [Spotify Developer Dashboard](https://developer.spotify.com/dashboard)
+   - Create a new app
+   - Copy your Client ID and Client Secret
+   - Create a `.env` file from the template:
+     ```bash
+     cp .env.example .env
+     ```
+   - Edit `.env` and add your credentials:
+     ```
+     SPOTIFY_CLIENT_ID=your_client_id_here
+     SPOTIFY_CLIENT_SECRET=your_client_secret_here
+     ```
+
+## Usage
+
+Run the downloader:
+```bash
+python spotify_downloader.py
+```
+
+Then enter Spotify track URLs when prompted:
+```
+Enter a Spotify track URL (or 'quit' to exit):
+> https://open.spotify.com/track/4iV5W9uYEdYUVa79Axb7Rh
+```
+
+Downloaded files will be saved to the `downloads/` directory.
+
+## Dependencies
+
+- **spotipy**: Spotify API wrapper
+- **yt-dlp**: YouTube video/audio downloader
+- **mutagen**: Audio metadata manipulation
+- **python-dotenv**: Environment variable management
+- **requests**: HTTP library for downloading album art
+
+## License
+
+This project is for educational purposes only. Please respect copyright laws and the terms of service of Spotify and YouTube.
+
+## Troubleshooting
+
+- **FFmpeg not found**: Make sure FFmpeg is installed and in your system's PATH
+- **Spotify API errors**: Check that your credentials are correct and the app has the right permissions
+- **No matching video found**: Try with different tracks, some may not be available on YouTube Music
+</file>
+
+<file path="requirements.txt">
+spotipy==2.23.0
+yt-dlp==2023.12.30
+mutagen==1.47.0
+python-dotenv==1.0.0
+requests==2.31.0
+</file>
+
+<file path="spotify_downloader.py">
+#!/usr/bin/env python3
+"""
+Spotify Music Downloader
+Downloads music from YouTube Music using Spotify metadata
+"""
+
+import os
+import re
+import sys
+import subprocess
+from pathlib import Path
+from urllib.parse import urlparse
+
+import spotipy
+from spotipy.oauth2 import SpotifyClientCredentials
+import yt_dlp
+from mutagen.mp3 import MP3
+from mutagen.id3 import ID3, APIC, TIT2, TPE1, TALB, TDRC, TRCK
+from mutagen.easyid3 import EasyID3
+import requests
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+class SpotifyDownloader:
+    def __init__(self):
+        """Initialize the downloader with Spotify credentials"""
+        self.client_id = os.getenv('SPOTIFY_CLIENT_ID')
+        self.client_secret = os.getenv('SPOTIFY_CLIENT_SECRET')
+        
+        if not self.client_id or not self.client_secret:
+            print("Error: Spotify credentials not found in .env file")
+            print("Please copy .env.example to .env and add your credentials")
+            sys.exit(1)
+        
+        # Initialize Spotify client
+        client_credentials_manager = SpotifyClientCredentials(
+            client_id=self.client_id,
+            client_secret=self.client_secret
+        )
+        self.sp = spotipy.Spotify(client_credentials_manager=client_credentials_manager)
+        
+        # Create downloads directory
+        self.downloads_dir = Path("downloads")
+        self.downloads_dir.mkdir(exist_ok=True)
+    
+    def extract_spotify_id(self, url):
+        """Extract track ID from Spotify URL"""
+        pattern = r'track/([a-zA-Z0-9]{22})'
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+        return None
+    
+    def get_track_metadata(self, track_id):
+        """Get track metadata from Spotify"""
+        try:
+            track = self.sp.track(track_id)
+            
+            metadata = {
+                'title': track['name'],
+                'artist': ', '.join([artist['name'] for artist in track['artists']]),
+                'album': track['album']['name'],
+                'release_date': track['album']['release_date'],
+                'track_number': track['track_number'],
+                'album_art_url': track['album']['images'][0]['url'] if track['album']['images'] else None,
+                'duration_ms': track['duration_ms']
+            }
+            
+            return metadata
+        except Exception as e:
+            print(f"Error getting track metadata: {e}")
+            return None
+    
+    def search_youtube_music(self, title, artist, duration_ms):
+        """Search for the best audio match on YouTube Music"""
+        search_query = f"{title} {artist}"
+        
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': True,
+            'format': 'bestaudio/best',
+        }
+        
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(
+                    f"ytsearch:{search_query}",
+                    download=False
+                )
+                
+                if not info or 'entries' not in info:
+                    return None
+                
+                # Find the best match based on duration
+                entries = info['entries']
+                best_match = None
+                best_diff = float('inf')
+                
+                for entry in entries:
+                    if not entry or 'duration' not in entry:
+                        continue
+                    
+                    entry_duration = entry['duration'] * 1000  # Convert to ms
+                    duration_diff = abs(entry_duration - duration_ms)
+                    
+                    # Consider it a good match if duration is within 10 seconds
+                    if duration_diff < 10000 and duration_diff < best_diff:
+                        best_diff = duration_diff
+                        best_match = entry
+                
+                return best_match
+                
+        except Exception as e:
+            print(f"Error searching YouTube Music: {e}")
+            return None
+    
+    def download_audio(self, video_url, output_path):
+        """Download audio from YouTube and convert to MP3"""
+        ydl_opts = {
+            'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '256',
+            }],
+            'outtmpl': str(output_path.with_suffix('')),
+            'quiet': False,  # Enable output for debugging
+            'no_warnings': False,
+            'extractaudio': True,
+            'audioformat': 'mp3',
+        }
+        
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([video_url])
+            return True
+        except Exception as e:
+            print(f"Error downloading audio: {e}")
+            return False
+    
+    def download_album_art(self, url, save_path):
+        """Download album art"""
+        try:
+            response = requests.get(url)
+            response.raise_for_status()
+            
+            with open(save_path, 'wb') as f:
+                f.write(response.content)
+            return True
+        except Exception as e:
+            print(f"Error downloading album art: {e}")
+            return False
+    
+    def inject_metadata(self, mp3_path, metadata, album_art_path):
+        """Inject metadata and album art into MP3 file"""
+        try:
+            audio = MP3(mp3_path, ID3=ID3)
+            
+            # Add ID3 tag if it doesn't exist
+            try:
+                audio.add_tags()
+            except:
+                pass
+            
+            # Add metadata
+            audio['TIT2'] = TIT2(encoding=3, text=metadata['title'])
+            audio['TPE1'] = TPE1(encoding=3, text=metadata['artist'])
+            audio['TALB'] = TALB(encoding=3, text=metadata['album'])
+            audio['TDRC'] = TDRC(encoding=3, text=metadata['release_date'])
+            audio['TRCK'] = TRCK(encoding=3, text=str(metadata['track_number']))
+            
+            # Add album art
+            if album_art_path and os.path.exists(album_art_path):
+                with open(album_art_path, 'rb') as albumart:
+                    audio['APIC'] = APIC(
+                        encoding=3,
+                        mime='image/jpeg',
+                        type=3,  # 3 means cover image
+                        desc='Cover',
+                        data=albumart.read()
+                    )
+            
+            audio.save()
+            return True
+        except Exception as e:
+            print(f"Error injecting metadata: {e}")
+            return False
+    
+    def sanitize_filename(self, filename):
+        """Sanitize filename for safe file system usage"""
+        # Remove invalid characters
+        invalid_chars = r'[<>:"/\\|?*]'
+        filename = re.sub(invalid_chars, '', filename)
+        # Limit length
+        if len(filename) > 200:
+            filename = filename[:200]
+        return filename
+    
+    def download_track(self, spotify_url):
+        """Main method to download a track from Spotify URL"""
+        print(f"Processing Spotify URL: {spotify_url}")
+        
+        # Extract track ID
+        track_id = self.extract_spotify_id(spotify_url)
+        if not track_id:
+            print("Invalid Spotify URL")
+            return False
+        
+        print(f"Track ID: {track_id}")
+        
+        # Get metadata
+        print("Getting track metadata...")
+        metadata = self.get_track_metadata(track_id)
+        if not metadata:
+            print("Failed to get track metadata")
+            return False
+        
+        print(f"Track: {metadata['title']} by {metadata['artist']}")
+        
+        # Search on YouTube Music
+        print("Searching on YouTube Music...")
+        video_info = self.search_youtube_music(
+            metadata['title'], 
+            metadata['artist'], 
+            metadata['duration_ms']
+        )
+        
+        if not video_info:
+            print("No matching video found on YouTube Music")
+            return False
+        
+        print(f"Found: {video_info['title']}")
+        
+        # Prepare filenames
+        safe_title = self.sanitize_filename(f"{metadata['title']} - {metadata['artist']}")
+        temp_audio_path = self.downloads_dir / safe_title
+        final_mp3_path = self.downloads_dir / f"{safe_title}.mp3"
+        album_art_path = self.downloads_dir / f"{safe_title}_cover.jpg"
+        
+        # Download album art
+        if metadata['album_art_url']:
+            print("Downloading album art...")
+            self.download_album_art(metadata['album_art_url'], album_art_path)
+        
+        # Download and convert audio
+        print("Downloading and converting audio...")
+        success = self.download_audio(video_info['url'], temp_audio_path)
+        
+        if not success:
+            print("Failed to download audio")
+            return False
+        
+        # Find the actual MP3 file (yt-dlp creates it with the base name)
+        actual_mp3_path = final_mp3_path
+        
+        if not actual_mp3_path.exists():
+            print(f"MP3 file not found after conversion: {actual_mp3_path}")
+            # List all files in downloads directory for debugging
+            print("Files in downloads directory:")
+            for file in self.downloads_dir.iterdir():
+                print(f"  - {file.name}")
+            return False
+        
+        # Inject metadata
+        print("Injecting metadata...")
+        success = self.inject_metadata(actual_mp3_path, metadata, album_art_path)
+        
+        if success:
+            print(f"Successfully downloaded: {actual_mp3_path}")
+            # Clean up temp album art
+            if album_art_path.exists():
+                album_art_path.unlink()
+            return True
+        else:
+            print("Failed to inject metadata")
+            return False
+
+
+def main():
+    """Command-line interface"""
+    print("Spotify Music Downloader")
+    print("=" * 30)
+    
+    downloader = SpotifyDownloader()
+    
+    while True:
+        print("\nEnter a Spotify track URL (or 'quit' to exit):")
+        url = input("> ").strip()
+        
+        if url.lower() in ['quit', 'exit', 'q']:
+            break
+        
+        if not url:
+            continue
+        
+        if 'spotify.com/track/' not in url:
+            print("Please enter a valid Spotify track URL")
+            continue
+        
+        downloader.download_track(url)
+    
+    print("\nGoodbye!")
+
+
+if __name__ == "__main__":
+    main()
+</file>
+
+</files>
