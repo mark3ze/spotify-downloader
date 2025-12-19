@@ -75,7 +75,7 @@ class SpotifyDownloader:
     
     def search_youtube_music(self, title, artist, duration_ms):
         """Search for the best audio match on YouTube Music"""
-        search_query = f"{title} {artist}"
+        search_query = f"{title} {artist} official audio"
         
         ydl_opts = {
             'quiet': True,
@@ -98,6 +98,8 @@ class SpotifyDownloader:
                 entries = info['entries']
                 best_match = None
                 best_diff = float('inf')
+                closest_match = None
+                closest_diff = float('inf')
                 
                 for entry in entries:
                     if not entry or 'duration' not in entry:
@@ -106,10 +108,24 @@ class SpotifyDownloader:
                     entry_duration = entry['duration'] * 1000  # Convert to ms
                     duration_diff = abs(entry_duration - duration_ms)
                     
-                    # Consider it a good match if duration is within 10 seconds
-                    if duration_diff < 10000 and duration_diff < best_diff:
+                    # Track the closest match for debugging
+                    if duration_diff < closest_diff:
+                        closest_diff = duration_diff
+                        closest_match = entry
+                    
+                    # Consider it a good match if duration is within 20 seconds
+                    if duration_diff < 20000 and duration_diff < best_diff:
                         best_diff = duration_diff
                         best_match = entry
+                
+                # Debug logging: show closest match even if rejected
+                if closest_match:
+                    print(f"Closest match found: '{closest_match['title']}' with duration diff: {closest_diff/1000:.1f}s")
+                
+                # Fallthrough: if no match found within 20 seconds, take first result
+                if not best_match and entries:
+                    print("No match within 20s tolerance, using first search result as fallback")
+                    best_match = entries[0]
                 
                 return best_match
                 
