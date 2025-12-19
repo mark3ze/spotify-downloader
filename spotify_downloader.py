@@ -75,19 +75,20 @@ class SpotifyDownloader:
     
     def search_youtube_music(self, title, artist, duration_ms):
         """Search for the best audio match on YouTube Music"""
-        search_query = f"{title} {artist} official audio"
+        search_query = f"{title} {artist} audio"
         
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
-            'extract_flat': True,
+            'extract_flat': False,
             'format': 'bestaudio/best',
+            'default_search': 'ytsearch5',
         }
         
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(
-                    f"ytsearch:{search_query}",
+                    f"ytsearch5:{search_query}",
                     download=False
                 )
                 
@@ -98,8 +99,6 @@ class SpotifyDownloader:
                 entries = info['entries']
                 best_match = None
                 best_diff = float('inf')
-                closest_match = None
-                closest_diff = float('inf')
                 
                 for entry in entries:
                     if not entry or 'duration' not in entry:
@@ -108,24 +107,11 @@ class SpotifyDownloader:
                     entry_duration = entry['duration'] * 1000  # Convert to ms
                     duration_diff = abs(entry_duration - duration_ms)
                     
-                    # Track the closest match for debugging
-                    if duration_diff < closest_diff:
-                        closest_diff = duration_diff
-                        closest_match = entry
-                    
-                    # Consider it a good match if duration is within 20 seconds
-                    if duration_diff < 20000 and duration_diff < best_diff:
+                    # Consider it a good match if duration is within 10 seconds
+                    if duration_diff < 10000 and duration_diff < best_diff:
                         best_diff = duration_diff
                         best_match = entry
-                
-                # Debug logging: show closest match even if rejected
-                if closest_match:
-                    print(f"Closest match found: '{closest_match['title']}' with duration diff: {closest_diff/1000:.1f}s")
-                
-                # Fallthrough: if no match found within 20 seconds, take first result
-                if not best_match and entries:
-                    print("No match within 20s tolerance, using first search result as fallback")
-                    best_match = entries[0]
+                        print(f"Closest match found: '{entry['title']}' with duration diff: {duration_diff/1000:.1f}s")
                 
                 return best_match
                 
@@ -136,17 +122,18 @@ class SpotifyDownloader:
     def download_audio(self, video_url, output_path):
         """Download audio from YouTube and convert to MP3"""
         ydl_opts = {
-            'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
+            'format': 'bestaudio/best',
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
                 'preferredquality': '256',
             }],
-            'outtmpl': str(output_path.with_suffix('')),
-            'quiet': False,  # Enable output for debugging
+            'outtmpl': str(output_path),
+            'quiet': False,
             'no_warnings': False,
-            'extractaudio': True,
-            'audioformat': 'mp3',
+            'nocheckcertificate': True,
+            'prefer_insecure': False,
+            'keepvideo': False,
         }
         
         try:
@@ -217,7 +204,7 @@ class SpotifyDownloader:
     
     def download_track(self, spotify_url):
         """Main method to download a track from Spotify URL"""
-        print(f"Processing Spotify URL: {spotify_url}")
+        print(f"\nProcessing Spotify URL: {spotify_url}")
         
         # Extract track ID
         track_id = self.extract_spotify_id(spotify_url)
@@ -252,7 +239,7 @@ class SpotifyDownloader:
         
         # Prepare filenames
         safe_title = self.sanitize_filename(f"{metadata['title']} - {metadata['artist']}")
-        temp_audio_path = self.downloads_dir / safe_title
+        output_template = self.downloads_dir / safe_title
         final_mp3_path = self.downloads_dir / f"{safe_title}.mp3"
         album_art_path = self.downloads_dir / f"{safe_title}_cover.jpg"
         
@@ -263,17 +250,15 @@ class SpotifyDownloader:
         
         # Download and convert audio
         print("Downloading and converting audio...")
-        success = self.download_audio(video_info['url'], temp_audio_path)
+        success = self.download_audio(video_info['webpage_url'], output_template)
         
         if not success:
             print("Failed to download audio")
             return False
         
-        # Find the actual MP3 file (yt-dlp creates it with the base name)
-        actual_mp3_path = final_mp3_path
-        
-        if not actual_mp3_path.exists():
-            print(f"MP3 file not found after conversion: {actual_mp3_path}")
+        # Check if MP3 file exists
+        if not final_mp3_path.exists():
+            print(f"MP3 file not found after conversion: {final_mp3_path}")
             # List all files in downloads directory for debugging
             print("Files in downloads directory:")
             for file in self.downloads_dir.iterdir():
@@ -282,10 +267,10 @@ class SpotifyDownloader:
         
         # Inject metadata
         print("Injecting metadata...")
-        success = self.inject_metadata(actual_mp3_path, metadata, album_art_path)
+        success = self.inject_metadata(final_mp3_path, metadata, album_art_path)
         
         if success:
-            print(f"Successfully downloaded: {actual_mp3_path}")
+            print(f"✓ Successfully downloaded: {final_mp3_path.name}")
             # Clean up temp album art
             if album_art_path.exists():
                 album_art_path.unlink()
@@ -297,8 +282,9 @@ class SpotifyDownloader:
 
 def main():
     """Command-line interface"""
+    print("=" * 50)
     print("Spotify Music Downloader")
-    print("=" * 30)
+    print("=" * 50)
     
     downloader = SpotifyDownloader()
     
@@ -316,7 +302,10 @@ def main():
             print("Please enter a valid Spotify track URL")
             continue
         
-        downloader.download_track(url)
+        try:
+            downloader.download_track(url)
+        except Exception as e:
+            print(f"Error: {e}")
     
     print("\nGoodbye!")
 
