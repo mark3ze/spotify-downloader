@@ -7,6 +7,7 @@ Send Spotify URLs and get MP3 files
 import os
 import asyncio
 import logging
+import sys
 from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -24,10 +25,13 @@ from spotify_downloader import SpotifyDownloader
 # Load environment variables
 load_dotenv()
 
-# Configure logging
+# Configure logging (Modified for Cloud Deployment to output to stdout)
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO,
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -36,8 +40,12 @@ class TelegramBot:
         self.downloader = SpotifyDownloader()
         self.telegram_token = os.getenv('TELEGRAM_BOT_TOKEN')
         
+        # Check environment variable if .env is missing (common in cloud)
         if not self.telegram_token:
-            raise ValueError("TELEGRAM_BOT_TOKEN not found in .env file")
+            self.telegram_token = os.environ.get('TELEGRAM_BOT_TOKEN')
+        
+        if not self.telegram_token:
+            raise ValueError("TELEGRAM_BOT_TOKEN not found in .env file or environment variables")
     
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Send welcome message"""
@@ -89,7 +97,6 @@ Just paste any Spotify link to get started! 🚀
     
     async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show user statistics"""
-        user_id = update.effective_user.id
         user_data = context.user_data
         
         downloads = user_data.get('total_downloads', 0)
@@ -106,6 +113,9 @@ Just paste any Spotify link to get started! 🚀
     
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle incoming Spotify URLs"""
+        if not update.message or not update.message.text:
+            return
+
         message_text = update.message.text.strip()
         
         # Check if it's a Spotify URL
@@ -189,7 +199,6 @@ Just paste any Spotify link to get started! 🚀
                                 spotify_url: str, content_type: str):
         """Download and send music files"""
         chat_id = update.effective_chat.id
-        user_id = update.effective_user.id
         
         # Send typing action
         await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_DOCUMENT)
@@ -234,7 +243,7 @@ Just paste any Spotify link to get started! 🚀
         success = self.downloader.download_single_track(metadata)
         
         if not success:
-            await status_msg.edit_text("❌ Failed to download track.")
+            await status_msg.edit_text("❌ Failed to download track (Audio not found or download error).")
             context.user_data['failed_downloads'] = context.user_data.get('failed_downloads', 0) + 1
             return
         
@@ -243,7 +252,7 @@ Just paste any Spotify link to get started! 🚀
         mp3_path = self.downloader.downloads_dir / f"{safe_title}.mp3"
         
         if not mp3_path.exists():
-            await status_msg.edit_text("❌ Downloaded file not found.")
+            await status_msg.edit_text("❌ Error: Downloaded file not found on disk.")
             return
         
         # Send the file
@@ -265,11 +274,18 @@ Just paste any Spotify link to get started! 🚀
             context.user_data['total_downloads'] = context.user_data.get('total_downloads', 0) + 1
             
             # Clean up file
-            mp3_path.unlink()
+            try:
+                mp3_path.unlink()
+            except Exception as e:
+                logger.warning(f"Failed to delete file {mp3_path}: {e}")
             
         except Exception as e:
             logger.error(f"Error sending file: {e}")
             await status_msg.edit_text(f"❌ Error sending file: {str(e)}")
+            # Clean up on error
+            if mp3_path.exists():
+                try: mp3_path.unlink() 
+                except: pass
     
     async def download_album(self, update: Update, context: ContextTypes.DEFAULT_TYPE, 
                             spotify_url: str):
@@ -300,13 +316,16 @@ Just paste any Spotify link to get started! 🚀
         
         for idx, metadata in enumerate(tracks, 1):
             # Update progress
-            await status_msg.edit_text(
-                f"📀 Downloading album: *{tracks[0]['album']}*\n"
-                f"Total tracks: {len(tracks)}\n\n"
-                f"Progress: {idx}/{len(tracks)}\n"
-                f"Current: {metadata['title'][:40]}...",
-                parse_mode='Markdown'
-            )
+            try:
+                await status_msg.edit_text(
+                    f"📀 Downloading album: *{tracks[0]['album']}*\n"
+                    f"Total tracks: {len(tracks)}\n\n"
+                    f"Progress: {idx}/{len(tracks)}\n"
+                    f"Current: {metadata['title'][:40]}...",
+                    parse_mode='Markdown'
+                )
+            except:
+                pass 
             
             # Download
             success = self.downloader.download_single_track(metadata)
@@ -335,25 +354,25 @@ Just paste any Spotify link to get started! 🚀
             else:
                 failed += 1
             
-            await asyncio.sleep(1)  # Rate limiting
+            await asyncio.sleep(2)  # Rate limiting
         
-        # Final summary
-        await status_msg.edit_text(
-            f"✅ *Album Download Complete!*\n\n"
-            f"📀 Album: {tracks[0]['album']}\n"
-            f"✅ Successful: {successful}/{len(tracks)}\n"
-            f"❌ Failed: {failed}/{len(tracks)}",
-            parse_mode='Markdown'
-        )
+        try:
+            await status_msg.edit_text(
+                f"✅ *Album Download Complete!*\n\n"
+                f"📀 Album: {tracks[0]['album']}\n"
+                f"✅ Successful: {successful}/{len(tracks)}\n"
+                f"❌ Failed: {failed}/{len(tracks)}",
+                parse_mode='Markdown'
+            )
+        except:
+            await context.bot.send_message(chat_id=chat_id, text="✅ Album Download Complete!")
         
-        # Update stats
         context.user_data['total_downloads'] = context.user_data.get('total_downloads', 0) + successful
         context.user_data['failed_downloads'] = context.user_data.get('failed_downloads', 0) + failed
     
     async def download_playlist(self, update: Update, context: ContextTypes.DEFAULT_TYPE, 
                                spotify_url: str):
         """Download and send all tracks from a playlist"""
-        # Same logic as download_album, just with different emoji and text
         chat_id = update.effective_chat.id
         
         content_type, content_id = self.downloader.extract_spotify_info(spotify_url)
@@ -366,9 +385,11 @@ Just paste any Spotify link to get started! 🚀
             )
             return
         
-        # Get playlist name from first track or use ID
-        playlist = self.downloader.sp.playlist(content_id)
-        playlist_name = playlist['name']
+        try:
+            playlist = self.downloader.sp.playlist(content_id)
+            playlist_name = playlist['name']
+        except:
+            playlist_name = "Spotify Playlist"
         
         status_msg = await context.bot.send_message(
             chat_id=chat_id,
@@ -382,13 +403,16 @@ Just paste any Spotify link to get started! 🚀
         failed = 0
         
         for idx, metadata in enumerate(tracks, 1):
-            await status_msg.edit_text(
-                f"📝 Downloading playlist: *{playlist_name}*\n"
-                f"Total tracks: {len(tracks)}\n\n"
-                f"Progress: {idx}/{len(tracks)}\n"
-                f"Current: {metadata['title'][:40]}...",
-                parse_mode='Markdown'
-            )
+            try:
+                await status_msg.edit_text(
+                    f"📝 Downloading playlist: *{playlist_name}*\n"
+                    f"Total tracks: {len(tracks)}\n\n"
+                    f"Progress: {idx}/{len(tracks)}\n"
+                    f"Current: {metadata['title'][:40]}...",
+                    parse_mode='Markdown'
+                )
+            except:
+                pass
             
             success = self.downloader.download_single_track(metadata)
             
@@ -416,15 +440,18 @@ Just paste any Spotify link to get started! 🚀
             else:
                 failed += 1
             
-            await asyncio.sleep(1)
+            await asyncio.sleep(2)
         
-        await status_msg.edit_text(
-            f"✅ *Playlist Download Complete!*\n\n"
-            f"📝 Playlist: {playlist_name}\n"
-            f"✅ Successful: {successful}/{len(tracks)}\n"
-            f"❌ Failed: {failed}/{len(tracks)}",
-            parse_mode='Markdown'
-        )
+        try:
+            await status_msg.edit_text(
+                f"✅ *Playlist Download Complete!*\n\n"
+                f"📝 Playlist: {playlist_name}\n"
+                f"✅ Successful: {successful}/{len(tracks)}\n"
+                f"❌ Failed: {failed}/{len(tracks)}",
+                parse_mode='Markdown'
+            )
+        except:
+            await context.bot.send_message(chat_id=chat_id, text="✅ Playlist Download Complete!")
         
         context.user_data['total_downloads'] = context.user_data.get('total_downloads', 0) + successful
         context.user_data['failed_downloads'] = context.user_data.get('failed_downloads', 0) + failed
@@ -442,7 +469,7 @@ Just paste any Spotify link to get started! 🚀
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         
         # Start the bot
-        logger.info("Bot started!")
+        logger.info("Bot started! Polling for updates...")
         application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
@@ -453,8 +480,7 @@ def main():
         bot.run()
     except ValueError as e:
         print(f"Error: {e}")
-        print("\nPlease add TELEGRAM_BOT_TOKEN to your .env file")
-        print("Get your token from @BotFather on Telegram")
+        print("\nPlease check your Environment Variables")
     except Exception as e:
         logger.error(f"Error starting bot: {e}")
 

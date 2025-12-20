@@ -31,17 +31,24 @@ class SpotifyDownloader:
         self.client_id = os.getenv('SPOTIFY_CLIENT_ID')
         self.client_secret = os.getenv('SPOTIFY_CLIENT_SECRET')
         
+        # Also check os.environ directly for Docker environment
+        if not self.client_id:
+            self.client_id = os.environ.get('SPOTIFY_CLIENT_ID')
+        if not self.client_secret:
+            self.client_secret = os.environ.get('SPOTIFY_CLIENT_SECRET')
+        
         if not self.client_id or not self.client_secret:
-            print("Error: Spotify credentials not found in .env file")
-            print("Please copy .env.example to .env and add your credentials")
-            sys.exit(1)
+            if __name__ == "__main__":
+                print("Error: Spotify credentials not found in .env file or environment variables")
+                sys.exit(1)
         
         # Initialize Spotify client
-        client_credentials_manager = SpotifyClientCredentials(
-            client_id=self.client_id,
-            client_secret=self.client_secret
-        )
-        self.sp = spotipy.Spotify(client_credentials_manager=client_credentials_manager)
+        if self.client_id and self.client_secret:
+            client_credentials_manager = SpotifyClientCredentials(
+                client_id=self.client_id,
+                client_secret=self.client_secret
+            )
+            self.sp = spotipy.Spotify(client_credentials_manager=client_credentials_manager)
         
         # Create downloads directory
         self.downloads_dir = Path("downloads")
@@ -514,7 +521,10 @@ def main():
     
     while True:
         print("\nEnter Spotify URL (track/album/playlist) or 'quit' to exit:")
-        url = input("> ").strip()
+        try:
+            url = input("> ").strip()
+        except EOFError:
+            break
         
         if url.lower() in ['quit', 'exit', 'q']:
             break

@@ -19,5 +19,5 @@ tqdm==4.66.1
 # Telegram bot
 python-telegram-bot==21.0
 
-# Async support (usually included with Python 3.7+, but explicit is better)
+# Async support
 aiohttp==3.9.1
