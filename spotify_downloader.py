@@ -53,14 +53,30 @@ class SpotifyDownloader:
         # Create downloads directory
         self.downloads_dir = Path("downloads")
         self.downloads_dir.mkdir(exist_ok=True)
-    
+
+        # --- COOKIE SETUP (FIX FOR RENDER) ---
+        self.cookie_file = None
+        cookie_content = os.getenv('YOUTUBE_COOKIES')
+        
+        # If cookies are provided via Env Var (Best for Render)
+        if cookie_content:
+            try:
+                # Write cookies to a local file
+                with open('cookies.txt', 'w') as f:
+                    f.write(cookie_content)
+                self.cookie_file = 'cookies.txt'
+                print("✅ YouTube Cookies loaded from Environment Variable.")
+            except Exception as e:
+                print(f"⚠️ Error writing cookie file: {e}")
+        # If local file exists (Best for local testing)
+        elif os.path.exists('cookies.txt'):
+             self.cookie_file = 'cookies.txt'
+             print("✅ YouTube Cookies loaded from local file.")
+
     def extract_spotify_info(self, url):
         """Extract type and ID from Spotify URL"""
-        # Track pattern
         track_pattern = r'track/([a-zA-Z0-9]{22})'
-        # Album pattern
         album_pattern = r'album/([a-zA-Z0-9]{22})'
-        # Playlist pattern
         playlist_pattern = r'playlist/([a-zA-Z0-9]{22})'
         
         track_match = re.search(track_pattern, url)
@@ -154,7 +170,6 @@ class SpotifyDownloader:
                     }
                     tracks.append(metadata)
                 
-                # Check if there are more tracks
                 if results['next']:
                     results = self.sp.next(results)
                 else:
@@ -176,6 +191,10 @@ class SpotifyDownloader:
             'format': 'bestaudio/best',
             'default_search': 'ytsearch5',
         }
+
+        # Inject cookies if available
+        if self.cookie_file:
+            ydl_opts['cookiefile'] = self.cookie_file
         
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -187,7 +206,6 @@ class SpotifyDownloader:
                 if not info or 'entries' not in info:
                     return None
                 
-                # Find the best match based on duration
                 entries = info['entries']
                 best_match = None
                 best_diff = float('inf')
@@ -196,10 +214,9 @@ class SpotifyDownloader:
                     if not entry or 'duration' not in entry:
                         continue
                     
-                    entry_duration = entry['duration'] * 1000  # Convert to ms
+                    entry_duration = entry['duration'] * 1000
                     duration_diff = abs(entry_duration - duration_ms)
                     
-                    # Consider it a good match if duration is within 10 seconds
                     if duration_diff < 10000 and duration_diff < best_diff:
                         best_diff = duration_diff
                         best_match = entry
@@ -207,6 +224,7 @@ class SpotifyDownloader:
                 return best_match
                 
         except Exception as e:
+            print(f"Search error: {e}")
             return None
     
     def download_audio(self, video_url, output_path):
@@ -226,6 +244,10 @@ class SpotifyDownloader:
             'keepvideo': False,
             'progress_hooks': [self._download_progress_hook],
         }
+
+        # Inject cookies if available
+        if self.cookie_file:
+            ydl_opts['cookiefile'] = self.cookie_file
         
         try:
             self.download_pbar = None
@@ -237,6 +259,7 @@ class SpotifyDownloader:
         except Exception as e:
             if self.download_pbar:
                 self.download_pbar.close()
+            print(f"Download error: {e}")
             return False
     
     def _download_progress_hook(self, d):
@@ -278,20 +301,17 @@ class SpotifyDownloader:
         try:
             audio = MP3(mp3_path, ID3=ID3)
             
-            # Add ID3 tag if it doesn't exist
             try:
                 audio.add_tags()
             except:
                 pass
             
-            # Add metadata
             audio['TIT2'] = TIT2(encoding=3, text=metadata['title'])
             audio['TPE1'] = TPE1(encoding=3, text=metadata['artist'])
             audio['TALB'] = TALB(encoding=3, text=metadata['album'])
             audio['TDRC'] = TDRC(encoding=3, text=metadata['release_date'])
             audio['TRCK'] = TRCK(encoding=3, text=str(metadata['track_number']))
             
-            # Add album art
             if album_art_path and os.path.exists(album_art_path):
                 with open(album_art_path, 'rb') as albumart:
                     audio['APIC'] = APIC(
@@ -309,10 +329,8 @@ class SpotifyDownloader:
     
     def sanitize_filename(self, filename):
         """Sanitize filename for safe file system usage"""
-        # Remove invalid characters
         invalid_chars = r'[<>:"/\\|?*]'
         filename = re.sub(invalid_chars, '', filename)
-        # Limit length
         if len(filename) > 200:
             filename = filename[:200]
         return filename
@@ -341,13 +359,11 @@ class SpotifyDownloader:
             final_mp3_path = self.downloads_dir / f"{safe_title}.mp3"
             album_art_path = self.downloads_dir / f"{safe_title}_cover.jpg"
             
-            # Check if file already exists
             if final_mp3_path.exists():
                 if progress_bar:
                     progress_bar.write(f"  ⏭️  Skipped: {metadata['title']} (already exists)")
                 return True
             
-            # Download album art
             if metadata['album_art_url']:
                 self.download_album_art(metadata['album_art_url'], album_art_path)
             
@@ -362,7 +378,6 @@ class SpotifyDownloader:
             # Inject metadata
             self.inject_metadata(final_mp3_path, metadata, album_art_path)
             
-            # Clean up temp album art
             if album_art_path.exists():
                 album_art_path.unlink()
             
@@ -377,19 +392,16 @@ class SpotifyDownloader:
             return False
     
     def download_track(self, spotify_url):
-        """Download a single track from Spotify URL"""
         print(f"\n{'='*60}")
         print(f"Processing Spotify URL: {spotify_url}")
         print(f"{'='*60}\n")
         
-        # Extract track ID
         content_type, content_id = self.extract_spotify_info(spotify_url)
         
         if content_type != 'track':
             print("Invalid Spotify track URL")
             return False
         
-        # Get metadata
         metadata = self.get_track_metadata(content_id)
         if not metadata:
             print("Failed to get track metadata")
@@ -399,7 +411,6 @@ class SpotifyDownloader:
         print(f"👤 Artist: {metadata['artist']}")
         print(f"💿 Album: {metadata['album']}\n")
         
-        # Download
         success = self.download_single_track(metadata)
         
         if success:
@@ -410,25 +421,21 @@ class SpotifyDownloader:
         return success
     
     def download_album(self, spotify_url):
-        """Download all tracks from an album"""
         print(f"\n{'='*60}")
         print(f"Processing Spotify Album URL: {spotify_url}")
         print(f"{'='*60}")
         
-        # Extract album ID
         content_type, content_id = self.extract_spotify_info(spotify_url)
         
         if content_type != 'album':
             print("Invalid Spotify album URL")
             return False
         
-        # Get all tracks
         tracks = self.get_album_tracks(content_id)
         if not tracks:
             print("Failed to get album tracks")
             return False
         
-        # Download each track with progress bar
         successful = 0
         failed = 0
         
@@ -440,7 +447,7 @@ class SpotifyDownloader:
                 else:
                     failed += 1
                 pbar.update(1)
-                time.sleep(0.5)  # Small delay to avoid rate limiting
+                time.sleep(0.5)
         
         print(f"\n{'='*60}")
         print(f"✅ Successfully downloaded: {successful}/{len(tracks)}")
@@ -451,25 +458,21 @@ class SpotifyDownloader:
         return True
     
     def download_playlist(self, spotify_url):
-        """Download all tracks from a playlist"""
         print(f"\n{'='*60}")
         print(f"Processing Spotify Playlist URL: {spotify_url}")
         print(f"{'='*60}")
         
-        # Extract playlist ID
         content_type, content_id = self.extract_spotify_info(spotify_url)
         
         if content_type != 'playlist':
             print("Invalid Spotify playlist URL")
             return False
         
-        # Get all tracks
         tracks = self.get_playlist_tracks(content_id)
         if not tracks:
             print("Failed to get playlist tracks")
             return False
         
-        # Download each track with progress bar
         successful = 0
         failed = 0
         
@@ -481,7 +484,7 @@ class SpotifyDownloader:
                 else:
                     failed += 1
                 pbar.update(1)
-                time.sleep(0.5)  # Small delay to avoid rate limiting
+                time.sleep(0.5)
         
         print(f"\n{'='*60}")
         print(f"✅ Successfully downloaded: {successful}/{len(tracks)}")
@@ -492,7 +495,6 @@ class SpotifyDownloader:
         return True
     
     def download_from_url(self, spotify_url):
-        """Automatically detect and download from any Spotify URL"""
         content_type, content_id = self.extract_spotify_info(spotify_url)
         
         if not content_type:
@@ -510,7 +512,6 @@ class SpotifyDownloader:
 
 
 def main():
-    """Command-line interface"""
     print("=" * 60)
     print("🎵  Spotify Music Downloader")
     print("=" * 60)
