@@ -1,5 +1,23 @@
+# Spotify API
 spotipy==2.23.0
-yt-dlp==2024.12.13
+
+# YouTube downloader
+yt-dlp>=2024.12.13
+
+# Audio metadata
 mutagen==1.47.0
+
+# Environment variables
 python-dotenv==1.0.0
+
+# HTTP requests
 requests==2.31.0
+
+# Progress bars
+tqdm==4.66.1
+
+# Telegram bot
+python-telegram-bot==21.0
+
+# Async support (usually included with Python 3.7+, but explicit is better)
+aiohttp==3.9.1

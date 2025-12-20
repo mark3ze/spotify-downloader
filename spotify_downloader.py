@@ -2,12 +2,13 @@
 """
 Spotify Music Downloader
 Downloads music from YouTube Music using Spotify metadata
+Supports: Tracks, Albums, and Playlists
 """
 
 import os
 import re
 import sys
-import subprocess
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -19,6 +20,7 @@ from mutagen.id3 import ID3, APIC, TIT2, TPE1, TALB, TDRC, TRCK
 from mutagen.easyid3 import EasyID3
 import requests
 from dotenv import load_dotenv
+from tqdm import tqdm
 
 # Load environment variables
 load_dotenv()
@@ -45,13 +47,27 @@ class SpotifyDownloader:
         self.downloads_dir = Path("downloads")
         self.downloads_dir.mkdir(exist_ok=True)
     
-    def extract_spotify_id(self, url):
-        """Extract track ID from Spotify URL"""
-        pattern = r'track/([a-zA-Z0-9]{22})'
-        match = re.search(pattern, url)
-        if match:
-            return match.group(1)
-        return None
+    def extract_spotify_info(self, url):
+        """Extract type and ID from Spotify URL"""
+        # Track pattern
+        track_pattern = r'track/([a-zA-Z0-9]{22})'
+        # Album pattern
+        album_pattern = r'album/([a-zA-Z0-9]{22})'
+        # Playlist pattern
+        playlist_pattern = r'playlist/([a-zA-Z0-9]{22})'
+        
+        track_match = re.search(track_pattern, url)
+        album_match = re.search(album_pattern, url)
+        playlist_match = re.search(playlist_pattern, url)
+        
+        if track_match:
+            return ('track', track_match.group(1))
+        elif album_match:
+            return ('album', album_match.group(1))
+        elif playlist_match:
+            return ('playlist', playlist_match.group(1))
+        
+        return (None, None)
     
     def get_track_metadata(self, track_id):
         """Get track metadata from Spotify"""
@@ -59,6 +75,7 @@ class SpotifyDownloader:
             track = self.sp.track(track_id)
             
             metadata = {
+                'id': track['id'],
                 'title': track['name'],
                 'artist': ', '.join([artist['name'] for artist in track['artists']]),
                 'album': track['album']['name'],
@@ -71,6 +88,74 @@ class SpotifyDownloader:
             return metadata
         except Exception as e:
             print(f"Error getting track metadata: {e}")
+            return None
+    
+    def get_album_tracks(self, album_id):
+        """Get all tracks from an album"""
+        try:
+            album = self.sp.album(album_id)
+            tracks = []
+            
+            print(f"\n📀 Album: {album['name']}")
+            print(f"👤 Artist: {', '.join([artist['name'] for artist in album['artists']])}")
+            print(f"📊 Total tracks: {album['total_tracks']}\n")
+            
+            for track in album['tracks']['items']:
+                metadata = {
+                    'id': track['id'],
+                    'title': track['name'],
+                    'artist': ', '.join([artist['name'] for artist in track['artists']]),
+                    'album': album['name'],
+                    'release_date': album['release_date'],
+                    'track_number': track['track_number'],
+                    'album_art_url': album['images'][0]['url'] if album['images'] else None,
+                    'duration_ms': track['duration_ms']
+                }
+                tracks.append(metadata)
+            
+            return tracks
+        except Exception as e:
+            print(f"Error getting album tracks: {e}")
+            return None
+    
+    def get_playlist_tracks(self, playlist_id):
+        """Get all tracks from a playlist"""
+        try:
+            playlist = self.sp.playlist(playlist_id)
+            tracks = []
+            
+            print(f"\n🎵 Playlist: {playlist['name']}")
+            print(f"👤 Owner: {playlist['owner']['display_name']}")
+            print(f"📊 Total tracks: {playlist['tracks']['total']}\n")
+            
+            results = playlist['tracks']
+            while results:
+                for item in results['items']:
+                    if item['track'] is None:
+                        continue
+                    
+                    track = item['track']
+                    metadata = {
+                        'id': track['id'],
+                        'title': track['name'],
+                        'artist': ', '.join([artist['name'] for artist in track['artists']]),
+                        'album': track['album']['name'],
+                        'release_date': track['album']['release_date'],
+                        'track_number': track['track_number'],
+                        'album_art_url': track['album']['images'][0]['url'] if track['album']['images'] else None,
+                        'duration_ms': track['duration_ms']
+                    }
+                    tracks.append(metadata)
+                
+                # Check if there are more tracks
+                if results['next']:
+                    results = self.sp.next(results)
+                else:
+                    results = None
+            
+            return tracks
+        except Exception as e:
+            print(f"Error getting playlist tracks: {e}")
             return None
     
     def search_youtube_music(self, title, artist, duration_ms):
@@ -111,16 +196,14 @@ class SpotifyDownloader:
                     if duration_diff < 10000 and duration_diff < best_diff:
                         best_diff = duration_diff
                         best_match = entry
-                        print(f"Closest match found: '{entry['title']}' with duration diff: {duration_diff/1000:.1f}s")
                 
                 return best_match
                 
         except Exception as e:
-            print(f"Error searching YouTube Music: {e}")
             return None
     
     def download_audio(self, video_url, output_path):
-        """Download audio from YouTube and convert to MP3"""
+        """Download audio from YouTube and convert to MP3 with progress bar"""
         ydl_opts = {
             'format': 'bestaudio/best',
             'postprocessors': [{
@@ -129,20 +212,47 @@ class SpotifyDownloader:
                 'preferredquality': '256',
             }],
             'outtmpl': str(output_path),
-            'quiet': False,
-            'no_warnings': False,
+            'quiet': True,
+            'no_warnings': True,
             'nocheckcertificate': True,
             'prefer_insecure': False,
             'keepvideo': False,
+            'progress_hooks': [self._download_progress_hook],
         }
         
         try:
+            self.download_pbar = None
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([video_url])
+            if self.download_pbar:
+                self.download_pbar.close()
             return True
         except Exception as e:
-            print(f"Error downloading audio: {e}")
+            if self.download_pbar:
+                self.download_pbar.close()
             return False
+    
+    def _download_progress_hook(self, d):
+        """Progress hook for yt-dlp downloads"""
+        if d['status'] == 'downloading':
+            if not hasattr(self, 'download_pbar') or self.download_pbar is None:
+                total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
+                self.download_pbar = tqdm(
+                    total=total,
+                    unit='B',
+                    unit_scale=True,
+                    desc='  Downloading',
+                    bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'
+                )
+            
+            downloaded = d.get('downloaded_bytes', 0)
+            if self.download_pbar.total != downloaded:
+                self.download_pbar.update(downloaded - self.download_pbar.n)
+        
+        elif d['status'] == 'finished':
+            if self.download_pbar:
+                self.download_pbar.close()
+                self.download_pbar = None
     
     def download_album_art(self, url, save_path):
         """Download album art"""
@@ -154,7 +264,6 @@ class SpotifyDownloader:
                 f.write(response.content)
             return True
         except Exception as e:
-            print(f"Error downloading album art: {e}")
             return False
     
     def inject_metadata(self, mp3_path, metadata, album_art_path):
@@ -189,7 +298,6 @@ class SpotifyDownloader:
             audio.save()
             return True
         except Exception as e:
-            print(f"Error injecting metadata: {e}")
             return False
     
     def sanitize_filename(self, filename):
@@ -202,94 +310,210 @@ class SpotifyDownloader:
             filename = filename[:200]
         return filename
     
+    def download_single_track(self, metadata, progress_bar=None):
+        """Download a single track"""
+        try:
+            if progress_bar:
+                progress_bar.set_description(f"🎵 {metadata['title'][:40]}")
+            
+            # Search on YouTube Music
+            video_info = self.search_youtube_music(
+                metadata['title'], 
+                metadata['artist'], 
+                metadata['duration_ms']
+            )
+            
+            if not video_info:
+                if progress_bar:
+                    progress_bar.write(f"  ❌ Not found: {metadata['title']}")
+                return False
+            
+            # Prepare filenames
+            safe_title = self.sanitize_filename(f"{metadata['title']} - {metadata['artist']}")
+            output_template = self.downloads_dir / safe_title
+            final_mp3_path = self.downloads_dir / f"{safe_title}.mp3"
+            album_art_path = self.downloads_dir / f"{safe_title}_cover.jpg"
+            
+            # Check if file already exists
+            if final_mp3_path.exists():
+                if progress_bar:
+                    progress_bar.write(f"  ⏭️  Skipped: {metadata['title']} (already exists)")
+                return True
+            
+            # Download album art
+            if metadata['album_art_url']:
+                self.download_album_art(metadata['album_art_url'], album_art_path)
+            
+            # Download and convert audio
+            success = self.download_audio(video_info['webpage_url'], output_template)
+            
+            if not success or not final_mp3_path.exists():
+                if progress_bar:
+                    progress_bar.write(f"  ❌ Failed: {metadata['title']}")
+                return False
+            
+            # Inject metadata
+            self.inject_metadata(final_mp3_path, metadata, album_art_path)
+            
+            # Clean up temp album art
+            if album_art_path.exists():
+                album_art_path.unlink()
+            
+            if progress_bar:
+                progress_bar.write(f"  ✅ Downloaded: {metadata['title']}")
+            
+            return True
+            
+        except Exception as e:
+            if progress_bar:
+                progress_bar.write(f"  ❌ Error: {metadata['title']} - {str(e)}")
+            return False
+    
     def download_track(self, spotify_url):
-        """Main method to download a track from Spotify URL"""
-        print(f"\nProcessing Spotify URL: {spotify_url}")
+        """Download a single track from Spotify URL"""
+        print(f"\n{'='*60}")
+        print(f"Processing Spotify URL: {spotify_url}")
+        print(f"{'='*60}\n")
         
         # Extract track ID
-        track_id = self.extract_spotify_id(spotify_url)
-        if not track_id:
-            print("Invalid Spotify URL")
+        content_type, content_id = self.extract_spotify_info(spotify_url)
+        
+        if content_type != 'track':
+            print("Invalid Spotify track URL")
             return False
         
-        print(f"Track ID: {track_id}")
-        
         # Get metadata
-        print("Getting track metadata...")
-        metadata = self.get_track_metadata(track_id)
+        metadata = self.get_track_metadata(content_id)
         if not metadata:
             print("Failed to get track metadata")
             return False
         
-        print(f"Track: {metadata['title']} by {metadata['artist']}")
+        print(f"🎵 Track: {metadata['title']}")
+        print(f"👤 Artist: {metadata['artist']}")
+        print(f"💿 Album: {metadata['album']}\n")
         
-        # Search on YouTube Music
-        print("Searching on YouTube Music...")
-        video_info = self.search_youtube_music(
-            metadata['title'], 
-            metadata['artist'], 
-            metadata['duration_ms']
-        )
-        
-        if not video_info:
-            print("No matching video found on YouTube Music")
-            return False
-        
-        print(f"Found: {video_info['title']}")
-        
-        # Prepare filenames
-        safe_title = self.sanitize_filename(f"{metadata['title']} - {metadata['artist']}")
-        output_template = self.downloads_dir / safe_title
-        final_mp3_path = self.downloads_dir / f"{safe_title}.mp3"
-        album_art_path = self.downloads_dir / f"{safe_title}_cover.jpg"
-        
-        # Download album art
-        if metadata['album_art_url']:
-            print("Downloading album art...")
-            self.download_album_art(metadata['album_art_url'], album_art_path)
-        
-        # Download and convert audio
-        print("Downloading and converting audio...")
-        success = self.download_audio(video_info['webpage_url'], output_template)
-        
-        if not success:
-            print("Failed to download audio")
-            return False
-        
-        # Check if MP3 file exists
-        if not final_mp3_path.exists():
-            print(f"MP3 file not found after conversion: {final_mp3_path}")
-            # List all files in downloads directory for debugging
-            print("Files in downloads directory:")
-            for file in self.downloads_dir.iterdir():
-                print(f"  - {file.name}")
-            return False
-        
-        # Inject metadata
-        print("Injecting metadata...")
-        success = self.inject_metadata(final_mp3_path, metadata, album_art_path)
+        # Download
+        success = self.download_single_track(metadata)
         
         if success:
-            print(f"✓ Successfully downloaded: {final_mp3_path.name}")
-            # Clean up temp album art
-            if album_art_path.exists():
-                album_art_path.unlink()
-            return True
+            print(f"\n✅ Successfully downloaded!\n")
         else:
-            print("Failed to inject metadata")
+            print(f"\n❌ Download failed\n")
+        
+        return success
+    
+    def download_album(self, spotify_url):
+        """Download all tracks from an album"""
+        print(f"\n{'='*60}")
+        print(f"Processing Spotify Album URL: {spotify_url}")
+        print(f"{'='*60}")
+        
+        # Extract album ID
+        content_type, content_id = self.extract_spotify_info(spotify_url)
+        
+        if content_type != 'album':
+            print("Invalid Spotify album URL")
             return False
+        
+        # Get all tracks
+        tracks = self.get_album_tracks(content_id)
+        if not tracks:
+            print("Failed to get album tracks")
+            return False
+        
+        # Download each track with progress bar
+        successful = 0
+        failed = 0
+        
+        with tqdm(total=len(tracks), desc="Overall Progress", unit="track") as pbar:
+            for metadata in tracks:
+                success = self.download_single_track(metadata, pbar)
+                if success:
+                    successful += 1
+                else:
+                    failed += 1
+                pbar.update(1)
+                time.sleep(0.5)  # Small delay to avoid rate limiting
+        
+        print(f"\n{'='*60}")
+        print(f"✅ Successfully downloaded: {successful}/{len(tracks)}")
+        if failed > 0:
+            print(f"❌ Failed: {failed}/{len(tracks)}")
+        print(f"{'='*60}\n")
+        
+        return True
+    
+    def download_playlist(self, spotify_url):
+        """Download all tracks from a playlist"""
+        print(f"\n{'='*60}")
+        print(f"Processing Spotify Playlist URL: {spotify_url}")
+        print(f"{'='*60}")
+        
+        # Extract playlist ID
+        content_type, content_id = self.extract_spotify_info(spotify_url)
+        
+        if content_type != 'playlist':
+            print("Invalid Spotify playlist URL")
+            return False
+        
+        # Get all tracks
+        tracks = self.get_playlist_tracks(content_id)
+        if not tracks:
+            print("Failed to get playlist tracks")
+            return False
+        
+        # Download each track with progress bar
+        successful = 0
+        failed = 0
+        
+        with tqdm(total=len(tracks), desc="Overall Progress", unit="track") as pbar:
+            for metadata in tracks:
+                success = self.download_single_track(metadata, pbar)
+                if success:
+                    successful += 1
+                else:
+                    failed += 1
+                pbar.update(1)
+                time.sleep(0.5)  # Small delay to avoid rate limiting
+        
+        print(f"\n{'='*60}")
+        print(f"✅ Successfully downloaded: {successful}/{len(tracks)}")
+        if failed > 0:
+            print(f"❌ Failed: {failed}/{len(tracks)}")
+        print(f"{'='*60}\n")
+        
+        return True
+    
+    def download_from_url(self, spotify_url):
+        """Automatically detect and download from any Spotify URL"""
+        content_type, content_id = self.extract_spotify_info(spotify_url)
+        
+        if not content_type:
+            print("❌ Invalid Spotify URL")
+            return False
+        
+        if content_type == 'track':
+            return self.download_track(spotify_url)
+        elif content_type == 'album':
+            return self.download_album(spotify_url)
+        elif content_type == 'playlist':
+            return self.download_playlist(spotify_url)
+        
+        return False
 
 
 def main():
     """Command-line interface"""
-    print("=" * 50)
-    print("Spotify Music Downloader")
-    print("=" * 50)
+    print("=" * 60)
+    print("🎵  Spotify Music Downloader")
+    print("=" * 60)
+    print("Supports: Tracks, Albums, and Playlists")
+    print("=" * 60)
     
     downloader = SpotifyDownloader()
     
     while True:
-        print("\nEnter a Spotify track URL (or 'quit' to exit):")
+        print("\nEnter Spotify URL (track/album/playlist) or 'quit' to exit:")
         url = input("> ").strip()
         
         if url.lower() in ['quit', 'exit', 'q']:
@@ -298,16 +522,19 @@ def main():
         if not url:
             continue
         
-        if 'spotify.com/track/' not in url:
-            print("Please enter a valid Spotify track URL")
+        if 'spotify.com/' not in url:
+            print("❌ Please enter a valid Spotify URL")
             continue
         
         try:
-            downloader.download_track(url)
+            downloader.download_from_url(url)
+        except KeyboardInterrupt:
+            print("\n\n⚠️  Download interrupted by user")
+            break
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"❌ Error: {e}")
     
-    print("\nGoodbye!")
+    print("\n👋 Goodbye!")
 
 
 if __name__ == "__main__":
